@@ -1,6 +1,8 @@
 #pragma once
 
 #ifdef _DEBUG
+#include <windows.h>
+
 #define LOG(FMT, ...)                                    \
   {                                                      \
     const auto msg = std::format(FMT "\n", __VA_ARGS__); \

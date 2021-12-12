@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 
+#include "configuration.h"
 #include "logging.h"
 #include "scope_guard.h"
 
@@ -47,7 +48,6 @@ DWORD WINAPI BackgroundThreadRoutine(LPVOID p_parameter) {
   const auto on_exit = sg::make_scope_guard([p_sync]() {
     p_sync->is_stopped.store(true);
     p_sync->is_stopped.notify_one();
-    LOG("Exiting 'BackgroundThreadRoutine'");
   });
   try {
     return HotReloadService(p_sync);
@@ -58,9 +58,14 @@ DWORD WINAPI BackgroundThreadRoutine(LPVOID p_parameter) {
 }
 
 DWORD HotReloadService(ThreadSync* p_sync) {
-  // TODO: Parse config
+  LoaderConfiguration configuration{};
+  if (!configuration.LoadFromFile("dll_loader.ini")) {
+    LOG("Failed to load configuration");
+    return 1;
+  }
+
   std::error_code err{};
-  const auto dll_path = fs::absolute("reloaded.dll");
+  const auto dll_path = fs::absolute(configuration.dll_path_str);
   const auto new_dll_path = fs::temp_directory_path() / dll_path.filename();
   LoaderContext ctx{.watched_dll_path = dll_path,
                     .temp_dll_path = new_dll_path,
@@ -160,6 +165,7 @@ void Cleanup(ThreadSync* p_context) {
   // Wait for the background thread to finish its business
   p_context->should_stop.store(true);
   p_context->is_stopped.wait(false);
+  ::TerminateThread(p_context->h_thread, 0);
   ::CloseHandle(p_context->h_thread);
   LOG("Exiting '{}'", __FUNCTION__);
 }
