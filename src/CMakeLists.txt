@@ -4,6 +4,8 @@ add_library(dll_loader MODULE
   "scope_guard.h"
   "configuration.h"
   "configuration.cc"
+  "hot_reload.h"
+  "hot_reload.cc"
 )
 target_link_libraries(dll_loader PRIVATE inipp::inipp)
 
