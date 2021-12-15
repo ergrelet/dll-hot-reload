@@ -4,18 +4,17 @@
 #include "logging.h"
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) {
-  LOG("Entered '{}'", __FUNCTION__);
-  static dll_loader::ThreadSync context{};
+  LOG("Entered '{}' - Reason 0x{:x}", __FUNCTION__, fdwReason);
+  static dll_loader::HotReloadService context{};
 
   switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
-      ::DisableThreadLibraryCalls(hinstDLL);
-      if (!dll_loader::InitializeHotReload(&context)) {
+      if (!context.Initialize()) {
         return FALSE;
       }
       break;
     case DLL_PROCESS_DETACH:
-      dll_loader::CleanupHotReload(&context);
+      context.Cleanup();
       break;
   }
   return TRUE;

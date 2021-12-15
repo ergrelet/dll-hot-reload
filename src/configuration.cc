@@ -26,6 +26,11 @@ bool LoaderConfiguration::LoadFromFile(const fs::path& configuration_path) {
     return false;
   }
 
+  if (!inipp::get_value(ini.sections[""], "ManualMap", use_manual_mapping)) {
+    LOG("Failed to retrieve 'ManualMap' value from configuration");
+    return false;
+  }
+
   return true;
 }
 

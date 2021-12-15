@@ -8,13 +8,21 @@ namespace dll_loader {
 
 // Shared between threads
 struct ThreadSync {
-  HANDLE h_thread;
   std::atomic_bool should_stop;
   std::atomic_bool is_stopped;
 };
 
-bool InitializeHotReload(ThreadSync* p_context);
+class HotReloadService {
+ public:
+  bool Initialize();
+  void Cleanup();
 
-void CleanupHotReload(ThreadSync* p_context);
+ private:
+  void TerminateChildThreadProperly();
+
+ private:
+  HANDLE h_thread_;
+  ThreadSync thread_sync_;
+};
 
 }  // namespace dll_loader

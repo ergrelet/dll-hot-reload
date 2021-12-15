@@ -11,5 +11,5 @@
     ::OutputDebugStringA(msg.c_str());                   \
   }
 #else
-#define LOG(FMT, ..)
+#define LOG(FMT, ...)
 #endif

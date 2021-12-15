@@ -4,6 +4,8 @@
 #include <filesystem>
 
 #include "configuration.h"
+#include "dll_mappers/manual.h"
+#include "dll_mappers/win32.h"
 #include "logging.h"
 #include "scope_guard.h"
 
@@ -17,27 +19,21 @@ namespace fs = std::filesystem;
 // Used only in the main thread
 struct LoaderContext {
   const fs::path watched_dll_path;
-  const fs::path temp_dll_path;
-  HMODULE current_dll_handle;
   fs::file_time_type previous_write_time;
+  IDllMapper::Ptr p_dll_mapper;
 };
 
 static DWORD WINAPI BackgroundThreadRoutine(LPVOID p_parameter);
-static DWORD HotReloadService(ThreadSync* p_sync);
+static DWORD HotReloadServiceRoutine(ThreadSync* p_sync);
 static bool ReloadDLL(LoaderContext* p_ctx);
-static bool UnloadAndDeleteTempDLL(LoaderContext* p_ctx);
 
-bool InitializeHotReload(ThreadSync* p_context) {
+bool HotReloadService::Initialize() {
   LOG("Entered '{}'", __FUNCTION__);
-  if (p_context == nullptr) {
-    return false;
-  }
-
-  p_context->h_thread = ::CreateThread(
+  h_thread_ = ::CreateThread(
       nullptr, 0,
       reinterpret_cast<LPTHREAD_START_ROUTINE>(BackgroundThreadRoutine),
-      p_context, 0, nullptr);
-  if (p_context->h_thread == nullptr) {
+      &thread_sync_, 0, nullptr);
+  if (h_thread_ == nullptr) {
     return false;
   }
 
@@ -45,18 +41,27 @@ bool InitializeHotReload(ThreadSync* p_context) {
   return true;
 }
 
-void CleanupHotReload(ThreadSync* p_context) {
+void HotReloadService::Cleanup() {
   LOG("Entered '{}'", __FUNCTION__);
-  if (p_context == nullptr) {
+
+  TerminateChildThreadProperly();
+
+  LOG("Exiting '{}'", __FUNCTION__);
+}
+
+void HotReloadService::TerminateChildThreadProperly() {
+  if (h_thread_ == nullptr) {
     return;
   }
 
   // Wait for the background thread to finish its business
-  p_context->should_stop.store(true);
-  p_context->is_stopped.wait(false);
-  ::TerminateThread(p_context->h_thread, 0);
-  ::CloseHandle(p_context->h_thread);
-  LOG("Exiting '{}'", __FUNCTION__);
+  thread_sync_.should_stop.store(true);
+  thread_sync_.is_stopped.wait(false);
+
+  // Ensure the thread does not execute any more code
+  ::TerminateThread(h_thread_, 0);
+  ::CloseHandle(h_thread_);
+  h_thread_ = nullptr;
 }
 
 static DWORD WINAPI BackgroundThreadRoutine(LPVOID p_parameter) {
@@ -71,14 +76,14 @@ static DWORD WINAPI BackgroundThreadRoutine(LPVOID p_parameter) {
     p_sync->is_stopped.notify_one();
   });
   try {
-    return HotReloadService(p_sync);
-  } catch (const std::exception& ex) {
+    return HotReloadServiceRoutine(p_sync);
+  } catch ([[maybe_unused]] const std::exception& ex) {
     LOG("Unhandled exception in background thread: {}", ex.what());
     return 2;
   }
 }
 
-static DWORD HotReloadService(ThreadSync* p_sync) {
+static DWORD HotReloadServiceRoutine(ThreadSync* p_sync) {
   LoaderConfiguration configuration{};
   if (!configuration.LoadFromFile("dll_loader.ini")) {
     LOG("Failed to load configuration");
@@ -86,24 +91,30 @@ static DWORD HotReloadService(ThreadSync* p_sync) {
   }
 
   std::error_code err{};
-  const auto dll_path = fs::absolute(configuration.dll_path_str);
-  const auto new_dll_path = fs::temp_directory_path() / dll_path.filename();
-  LoaderContext ctx{.watched_dll_path = dll_path,
-                    .temp_dll_path = new_dll_path,
-                    .current_dll_handle = nullptr,
-                    .previous_write_time = fs::file_time_type::min()};
+  LoaderContext ctx{
+      .watched_dll_path = fs::absolute(configuration.dll_path_str),
+      .previous_write_time = fs::file_time_type::min(),
+      .p_dll_mapper = nullptr};
+  if (configuration.use_manual_mapping) {
+    ctx.p_dll_mapper = std::make_unique<mappers::ManualDllMapper>();
+  } else {
+    ctx.p_dll_mapper = std::make_unique<mappers::Win32DllMapper>();
+  }
+
   if (!ReloadDLL(&ctx)) {
-    LOG("Failed to load '{}'. LastError=0x{:x}", ctx.watched_dll_path.string(),
-        ::GetLastError());
+    LOG("Failed to load '{}'.", ctx.watched_dll_path.string());
     return 1;
   }
-  const auto unload_on_exit = sg::make_scope_guard([p_sync, &ctx]() {
-    if (!p_sync->should_stop.load()) {
-      // Note: Cannot call `FreeLibrary` here if we were asked to stop since it
-      // would mean loader lock's already been taken and we would deadlock.
-      UnloadAndDeleteTempDLL(&ctx);
-    }
-  });
+  const auto unload_on_exit =
+      sg::make_scope_guard([p_sync, &configuration, &ctx]() {
+        if (!configuration.use_manual_mapping && p_sync->should_stop.load()) {
+          // Note: Cannot call `FreeLibrary` here if we were asked to stop since
+          // it would mean loader lock's already been taken and we would
+          // deadlock.
+          return;
+        }
+        ctx.p_dll_mapper->UnloadAllDlls();
+      });
 
   const auto parent_directory_path = ctx.watched_dll_path.parent_path();
   LOG("Watching '{}' for modifications", parent_directory_path.string());
@@ -165,46 +176,12 @@ static bool ReloadDLL(LoaderContext* p_ctx) {
     return false;
   }
 
-  if (!UnloadAndDeleteTempDLL(p_ctx)) {
+  // FIXME: Only works because we watch one DLL at a time
+  if (!p_ctx->p_dll_mapper->UnloadAllDlls()) {
     return false;
   }
 
-  std::error_code err{};
-  fs::copy_file(p_ctx->watched_dll_path, p_ctx->temp_dll_path, err);
-  if (err) {
-    LOG("copy_file failed. Error: {}", err.message());
-    return false;
-  }
-
-  p_ctx->current_dll_handle =
-      ::LoadLibraryA(p_ctx->temp_dll_path.string().c_str());
-  LOG("Exiting '{}'", __FUNCTION__);
-  return p_ctx->current_dll_handle != nullptr;
-}
-
-static bool UnloadAndDeleteTempDLL(LoaderContext* p_ctx) {
-  LOG("Entered '{}'", __FUNCTION__);
-  if (p_ctx == nullptr) {
-    return {};
-  }
-
-  // Free (and unload) the DLL
-  if (p_ctx->current_dll_handle != nullptr) {
-    if (::FreeLibrary(p_ctx->current_dll_handle) == FALSE) {
-      LOG("FreeLibrary failed. LastError=0x{:x}", ::GetLastError());
-      return false;
-    }
-    p_ctx->current_dll_handle = nullptr;
-  }
-
-  std::error_code err{};
-  fs::remove(p_ctx->temp_dll_path, err);
-  if (err) {
-    LOG("remove failed. Error: {}", err.message());
-    return false;
-  }
-
-  return true;
+  return p_ctx->p_dll_mapper->LoadDll(p_ctx->watched_dll_path);
 }
 
 }  // namespace dll_loader
