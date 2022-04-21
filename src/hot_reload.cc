@@ -20,6 +20,7 @@ namespace fs = std::filesystem;
 struct LoaderContext {
   const fs::path watched_dll_path;
   fs::file_time_type previous_write_time;
+  std::chrono::time_point<std::chrono::system_clock> last_reload_time;
   IDllMapper::Ptr p_dll_mapper;
 };
 
@@ -142,17 +143,22 @@ static DWORD HotReloadServiceRoutine(ThreadSync* p_sync) {
         }
         break;
       case WAIT_OBJECT_0: {
-        // Change notification received
+        // Change notification received, something has changed in the directory
+        // we're watching
         constexpr auto kUpdateCooldown = 5s;
-        // Check last write time
+
         std::error_code err{};
-        const auto last_write_time =
+        const auto dll_last_write_time =
             fs::last_write_time(ctx.watched_dll_path, err);
-        if (last_write_time >= ctx.previous_write_time + kUpdateCooldown) {
+        const auto current_time = std::chrono::system_clock::now();
+        // Check last write time and last reload time
+        if (dll_last_write_time >= ctx.previous_write_time + kUpdateCooldown &&
+            current_time >= ctx.last_reload_time + kUpdateCooldown) {
           if (!ReloadDLL(&ctx)) {
             return 1;
           }
-          ctx.previous_write_time = last_write_time;
+          ctx.last_reload_time = current_time;
+          ctx.previous_write_time = dll_last_write_time;
         }
         // Register to future notifications
         if (::FindNextChangeNotification(h_change) == FALSE) {
