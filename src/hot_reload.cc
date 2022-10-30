@@ -97,9 +97,11 @@ static DWORD HotReloadServiceRoutine(ThreadSync* p_sync) {
       .previous_write_time = fs::file_time_type::min(),
       .p_dll_mapper = nullptr};
   if (configuration.use_manual_mapping) {
-    ctx.p_dll_mapper = std::make_unique<mappers::ManualDllMapper>();
+    ctx.p_dll_mapper = std::make_unique<mappers::ManualDllMapper>(
+        configuration.on_load_function, configuration.on_unload_function);
   } else {
-    ctx.p_dll_mapper = std::make_unique<mappers::Win32DllMapper>();
+    ctx.p_dll_mapper = std::make_unique<mappers::Win32DllMapper>(
+        configuration.on_load_function, configuration.on_unload_function);
   }
 
   if (!ReloadDLL(&ctx)) {
