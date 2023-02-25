@@ -38,6 +38,8 @@ if (Blackbone_ADDED)
 
   target_include_directories(BlackBone PUBLIC "${Blackbone_SOURCE_DIR}/src/3rd_party")
   target_include_directories(BlackBone INTERFACE "${Blackbone_SOURCE_DIR}/src")
+  # Note: BlackBone can only be compiled in permissive mode on recent VS 2022 versions
+  target_compile_options(BlackBone PRIVATE "/permissive")
 endif()
 
 add_subdirectory("src")
